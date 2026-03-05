@@ -1,0 +1,16 @@
+{
+  "name": "test-email-ui",
+  "version": "1.0.0",
+  "description": "Playwright UI tests for Bell webmail",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui",
+    "test:report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.44.0",
+    "dotenv": "^17.3.1",
+    "typescript": "^5.4.0"
+  }
+}
