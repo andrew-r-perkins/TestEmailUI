@@ -6,7 +6,6 @@ import { test, expect, Page } from '@playwright/test';
 const BASE_URL = 'https://webmail.bell.net/bell/index-rui.jsp';
 const VALID_EMAIL = process.env.BELL_EMAIL || 'your-email@sympatico.ca';
 const VALID_PASSWORD = process.env.BELL_PASSWORD || 'your-password';
-const AUTH_FILE = 'playwright/.auth/user.json';
 
 // ─────────────────────────────────────────────
 // Helpers
@@ -32,7 +31,13 @@ async function login(page: Page, email = VALID_EMAIL, password = VALID_PASSWORD)
   await page.goto(BASE_URL);
   await page.waitForSelector('input[type="text"], input[type="email"]');
   await page.locator('input[type="text"], input[type="email"]').first().fill(email);
-  await page.locator('input[type="password"]').fill(password);
+  await page.locator('input[type="password"]').focus();
+  await page.keyboard.press('Control+a');
+  await page.keyboard.press('Delete');
+  await page.locator('input[type="password"]').pressSequentially(password, { delay: 50 });
+  // Clear F5 Shape anti-bot cookies that Bell sets on page load; without this the
+  // auth.login POST can be rejected by Shape's server-side bot gate (Firefox project).
+  await page.context().clearCookies();
   await page.getByRole('button', { name: 'Login' }).click();
   await page.waitForURL(/.*#\/mail.*/);
   await dismissMfaModals(page);
@@ -42,6 +47,10 @@ async function login(page: Page, email = VALID_EMAIL, password = VALID_PASSWORD)
 // 1. LOGIN PAGE
 // ═════════════════════════════════════════════
 test.describe('Login Page', () => {
+  // The chromium/firefox projects set storageState at the project level.
+  // Override it here with an empty state so these tests always see the real login page.
+  test.use({ storageState: { cookies: [], origins: [] } });
+
   test.beforeEach(async ({ page }) => {
     await page.goto(BASE_URL);
     await page.waitForSelector('input[type="text"], input[type="email"]');
@@ -116,9 +125,14 @@ test.describe('Login Page', () => {
     // beforeEach already loaded the login page; fill and submit directly to avoid
     // an extra page.goto() which can confuse Bell's server and add latency.
     await page.locator('input[type="text"], input[type="email"]').first().fill(VALID_EMAIL);
-    await page.locator('input[type="password"]').fill(VALID_PASSWORD);
+    await page.locator('input[type="password"]').focus();
+    await page.keyboard.press('Control+a');
+    await page.keyboard.press('Delete');
+    await page.locator('input[type="password"]').pressSequentially(VALID_PASSWORD, { delay: 50 });
+    // Clear Shape anti-bot cookies before submitting (see login() helper comment).
+    await page.context().clearCookies();
     await page.getByRole('button', { name: 'Login' }).click();
-    await page.waitForURL(/.*#\/mail.*/, { timeout: 75000 });
+    await page.waitForURL(/.*#\/mail.*/, { timeout: parseInt(process.env.PLAYWRIGHT_TIMEOUT || '30000') });
     await dismissMfaModals(page);
     await expect(page).toHaveURL(/.*#\/mail.*/);
     await expect(page.getByText(/inbox/i).first()).toBeVisible();
@@ -142,19 +156,22 @@ test.describe('Login Page', () => {
 // 2. INBOX
 // ═════════════════════════════════════════════
 test.describe('Inbox', () => {
-  test.use({ storageState: 'playwright/.auth/user.json' });
+  // storageState is inherited from the project config (user-chromium.json or user-firefox.json).
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async ({ page, browserName }) => {
+    // Build the browser-specific auth file path to persist refreshed cookies after each test.
+    const authFile = `playwright/.auth/user-${browserName}.json`;
     await page.goto(BASE_URL);
-    // If Bell rotated the session token, the page lands on login — re-authenticate
+    // If the saved session was invalidated (e.g. by a real login in the Login Page suite
+    // creating a new server-side session), Bell lands on the login page — re-authenticate.
     if (await page.getByRole('button', { name: 'Login' }).isVisible({ timeout: 5000 }).catch(() => false)) {
       await login(page);
     } else {
       await page.waitForURL(/.*#\/mail.*/);
     }
     await dismissMfaModals(page);
-    // Persist the current (possibly rotated) session token for the next test
-    await page.context().storageState({ path: AUTH_FILE });
+    // Persist any rotated/refreshed cookies so the next test starts with a valid session.
+    await page.context().storageState({ path: authFile });
   });
 
   test('should display inbox after login', async ({ page }) => {
@@ -291,7 +308,7 @@ test.describe('Inbox', () => {
   });
 
   test('should be able to select an email with checkbox', async ({ page }) => {
-    // dismissMfaModals is NOT called here — beforeEach already handles it (~10 s saving).
+    // dismissMfaModals is handled by beforeEach; no need to call it again here.
     // Bell uses CSS-styled checkboxes: the <input> is hidden and its .checked property
     // is not set by clicking the input directly. Check that the checkbox UI elements
     // exist and attempt a click; verify via visual selection state or inbox heading.
@@ -354,19 +371,19 @@ test.describe('Inbox', () => {
 // 3. LOGOUT
 // ═════════════════════════════════════════════
 test.describe('Logout', () => {
-  test.use({ storageState: 'playwright/.auth/user.json' });
+  // storageState is inherited from the project config (user-chromium.json or user-firefox.json).
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async ({ page, browserName }) => {
+    const authFile = `playwright/.auth/user-${browserName}.json`;
     await page.goto(BASE_URL);
-    // If Bell rotated the session token, the page lands on login — re-authenticate
+    // Same session-refresh guard as the Inbox suite.
     if (await page.getByRole('button', { name: 'Login' }).isVisible({ timeout: 5000 }).catch(() => false)) {
       await login(page);
     } else {
       await page.waitForURL(/.*#\/mail.*/);
     }
     await dismissMfaModals(page);
-    // Persist the current (possibly rotated) session token for the next test
-    await page.context().storageState({ path: AUTH_FILE });
+    await page.context().storageState({ path: authFile });
   });
 
   test('should display Log out button when logged in', async ({ page }) => {
@@ -379,8 +396,8 @@ test.describe('Logout', () => {
   });
 
   test('should not be able to access inbox after logout', async ({ page }) => {
-    // This test's beforeEach may need to re-authenticate (previous test logged out),
-    // adding ~15 s; triple the timeout so there is budget for the full test body.
+    // beforeEach may need to re-authenticate if the previous test's logout invalidated
+    // the session; triple the timeout to give budget for re-auth + the test body.
     test.slow();
     await page.locator('span.ow-navbar-label', { hasText: /log out/i }).click();
     await expect(page).toHaveURL(/ctvnews\.ca/, { timeout: 15000 });
