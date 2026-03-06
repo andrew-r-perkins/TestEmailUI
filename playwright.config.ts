@@ -23,8 +23,9 @@ export default defineConfig({
   timeout: parseInt(process.env.PLAYWRIGHT_TIMEOUT || '30000'),
   retries: 1,
   workers: process.env.PLAYWRIGHT_WORKERS ? parseInt(process.env.PLAYWRIGHT_WORKERS) : undefined,
+  reporter: 'html',
   use: {
-    headless: false,          // set true for CI
+    headless: true,
     baseURL: 'https://webmail.bell.net',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',

@@ -26,6 +26,10 @@ npx playwright test tests/bell-webmail.spec.ts
 # Run tests in a specific browser only
 npx playwright test --project=chromium
 npx playwright test --project=firefox
+
+# Run only the auth setup for one browser (useful for debugging login)
+npx playwright test --project=setup-chromium
+npx playwright test --project=setup-firefox
 ```
 
 ## Architecture
@@ -33,24 +37,30 @@ npx playwright test --project=firefox
 This is a Playwright E2E test suite targeting Bell Webmail (https://webmail.bell.net). TypeScript is compiled on-the-fly by Playwright — no build step needed.
 
 **Structure:**
-- `tests/bell-webmail.spec.ts` — All 27 tests across 3 suites: Login Page, Inbox, Logout
-- `playwright.config.ts` — Test configuration (30s timeout, 1 retry, Chromium + Firefox)
-- `.env` — Credentials (`BELL_EMAIL`, `BELL_PASSWORD`); copy from `.env.example`
+- `tests/bell-webmail.spec.ts` — All 28 tests across 3 suites: Login Page, Inbox, Logout
+- `tests/auth.setup.ts` — Pre-test authentication; saves session cookies to `playwright/.auth/user-{browser}.json`
+- `playwright.config.ts` — Test configuration (timeout, retries, workers, Chromium + Firefox projects)
+- `playwright/.auth/` — Per-browser saved sessions (`user-chromium.json`, `user-firefox.json`); gitignored
+- `.env` — Credentials and tuning (`BELL_EMAIL`, `BELL_PASSWORD`, `PLAYWRIGHT_WORKERS`, `PLAYWRIGHT_TIMEOUT`); copy from `.env.example`
 
 **Test organization:**
 - `login(page)` helper function encapsulates authentication — reused in `beforeEach` hooks for Inbox and Logout suites
-- `dismissMfaModals(page)` helper dismisses "Later" / "Close" MFA dialogs with 5 s `waitFor` checks; called in `login()`, all `beforeEach` hooks, and at the start of any test body that performs clicks in the email list
+- `dismissMfaModals(page)` helper dismisses "Later" / "Close" MFA dialogs with `waitFor` checks and `force: true` clicks (buttons can be animating or overlaid); called in `login()`, all `beforeEach` hooks, and at the start of any test body that performs clicks in the email list
 - Tests use role-based, text-based, and CSS locators with fallback selectors for robustness
 - `.catch(() => false)` patterns handle optional UI elements that may not always appear
 - The "should show error on invalid credentials" test is deliberately last in the Login suite to prevent Bell IP rate-limiting from blocking the valid-login test
-- `test.slow()` is set on "should successfully log in" to triple the timeout (90 s) as a safety margin
+- `test.slow()` is set on "should successfully log in" to triple the timeout as a safety margin
+- Login Page suite uses `test.use({ storageState: { cookies: [], origins: [] } })` to override the project-level storageState so those tests always see the real login page
 
 **Configuration notes:**
-- `headless: false` in `playwright.config.ts` — set to `true` for CI environments
+- `headless: true` in `playwright.config.ts` — use `npm run test:headed` to run with visible browser windows
 - Tests run against both Chromium and Firefox by default; each test runs twice
 - `baseURL` is `https://webmail.bell.net` — page navigations use relative paths
 - Screenshots and videos are captured only on failure (`test-results/` directory)
-- `dotenv` is loaded in `playwright.config.ts` so `.env` credentials are available to tests
+- `dotenv` is loaded in `playwright.config.ts` so all `.env` values are available to tests
+- `PLAYWRIGHT_TIMEOUT` (default `30000`) controls the global test timeout in ms; also used as the `waitForURL` timeout in the login test
+- `PLAYWRIGHT_WORKERS` (default: Playwright's default) controls parallelism — set to `1` on low-powered machines to prevent CPU spikes
+- Four projects are defined: `setup-chromium` and `setup-firefox` run `auth.setup.ts` first; `chromium` and `firefox` depend on their respective setup and load saved sessions
 
 **Known Bell Webmail behaviours:**
 - The Login button has `aria-label="Login"` — use `getByRole('button', { name: 'Login' })`, not `'Log in'`
@@ -62,3 +72,7 @@ This is a Playwright E2E test suite targeting Bell Webmail (https://webmail.bell
 - MFA modals can re-appear after `beforeEach` in tests that interact with the email list; call `await dismissMfaModals(page)` again at the top of those test bodies
 - `beforeEach` in Inbox/Logout suites uses a 5 s timeout to detect the login button (SPA rendering can be slow after session expiry)
 - Quote `.env` values containing special characters (e.g. `$`) in single quotes to prevent shell/dotenv interpolation
+- Bell's backend uses **F5 Shape Security** anti-bot protection — Shape sets cookies on page load that can cause the auth POST to be rejected; calling `page.context().clearCookies()` before clicking Login bypasses this gate
+- Password input must use `pressSequentially()` (not `fill()`) to fire keyboard events that Bell's login form requires; use `.focus()` instead of `.click()` on the password field in Firefox to avoid triggering the native password manager popup
+- Firefox is blocked by Shape at the server level unless the browser's User-Agent is spoofed to Chrome's UA — set via `userAgent: devices['Desktop Chrome'].userAgent` in the Firefox project configs
+- Firefox's built-in password manager must be disabled via `firefoxUserPrefs` (`signon.rememberSignons`, `signon.autofillForms`, `signon.generation.enabled`) to prevent stale credentials being injected over what Playwright types
