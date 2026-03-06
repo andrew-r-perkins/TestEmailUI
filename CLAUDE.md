@@ -68,7 +68,7 @@ This is a Playwright E2E test suite targeting Bell Webmail (https://webmail.bell
 - The French login button visible text is "Se connecter" but its `aria-label` stays "Login" — use `locator('button', { hasText: /se connecter/i })`, not `getByRole`
 - Logout redirects to `ctvnews.ca`, not back to the Bell login page
 - Bell's email list may not use `<table>` rows — use `getByRole('row').nth(1)` (skip the header row at `nth(0)`) to click the first email
-- Bell may use CSS-styled (visually hidden) checkboxes — use `locator('[type="checkbox"], [role="checkbox"]')` and `.click({ force: true })` instead of `.check()`
+- Bell email row checkboxes are `<span role="checkbox" class="ow-icon ow-icon-checkbox-unselected">` — use `locator('[class*="ow-icon-checkbox-unselected"]').first()` to target the first email checkbox specifically; avoid generic `[role="checkbox"]` nth() selectors as nth(0) is the header select-all and nth(1) is a date-group select-all, both of which delete multiple emails
 - MFA modals can re-appear after `beforeEach` in tests that interact with the email list; call `await dismissMfaModals(page)` again at the top of those test bodies
 - `beforeEach` in Inbox/Logout suites uses a 5 s timeout to detect the login button (SPA rendering can be slow after session expiry)
 - Quote `.env` values containing special characters (e.g. `$`) in single quotes to prevent shell/dotenv interpolation
