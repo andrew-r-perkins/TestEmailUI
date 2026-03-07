@@ -11,9 +11,9 @@ test.describe('Contacts', () => {
 
   test.beforeEach(async ({ page, browserName }) => {
     await setupAuthenticatedPage(page, browserName);
-    // Dismiss any MFA / 2FA modals before interacting with the navbar —
-    // they can reappear after session restore and block the click.
-    await dismissMfaModals(page);
+    // setupAuthenticatedPage already calls dismissMfaModals internally —
+    // do NOT repeat it here; the combined wait (~15 s × 2) would exhaust
+    // the 30 s default timeout before the test body starts.
     // Contacts navbar item is a <span class="ow-navbar-label">, not an <a> tag —
     // same pattern as Settings and Log out.
     await page.locator('span.ow-navbar-label', { hasText: /contacts/i }).click();
@@ -182,9 +182,10 @@ test.describe('Contacts', () => {
   // Self-contained: all contacts and the group are created within the test.
   // ═════════════════════════════════════════════
   test('should create a group containing two test contacts', async ({ page }) => {
-    await dismissMfaModals(page);
-    // Contact creation + group form submission takes time — triple the timeout.
+    // Triple the timeout first — contact creation + group form takes time.
+    // test.slow() must be called before any awaits so the full 3× budget applies.
     test.slow();
+    await dismissMfaModals(page);
 
     // ── Steps 1–2: Create two uniquely identifiable test contacts ─────────────
     // Each returns its timestamp (middle name) for targeted lookup later.
