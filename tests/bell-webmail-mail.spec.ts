@@ -1,177 +1,16 @@
-import { test, expect, Page } from '@playwright/test';
-
-// ─────────────────────────────────────────────
-// Configuration
-// ─────────────────────────────────────────────
-const BASE_URL = 'https://webmail.bell.net/bell/index-rui.jsp';
-const VALID_EMAIL = process.env.BELL_EMAIL || 'your-email@sympatico.ca';
-const VALID_PASSWORD = process.env.BELL_PASSWORD || 'your-password';
-
-// ─────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────
-async function dismissMfaModals(page: Page) {
-  const laterBtn = page.getByRole('button', { name: 'Later' });
-  await laterBtn.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
-  if (await laterBtn.isVisible().catch(() => false)) {
-    await laterBtn.click();
-    await laterBtn.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
-  }
-  const closeBtn = page.getByRole('button', { name: 'Close' });
-  await closeBtn.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
-  if (await closeBtn.isVisible().catch(() => false)) {
-    await closeBtn.click();
-    await closeBtn.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
-  }
-  // Ensure no modal overlay remains before proceeding
-  await page.locator('[role="dialog"]').waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
-}
-
-async function login(page: Page, email = VALID_EMAIL, password = VALID_PASSWORD) {
-  await page.goto(BASE_URL);
-  await page.waitForSelector('input[type="text"], input[type="email"]');
-  await page.locator('input[type="text"], input[type="email"]').first().fill(email);
-  await page.locator('input[type="password"]').focus();
-  await page.keyboard.press('Control+a');
-  await page.keyboard.press('Delete');
-  await page.locator('input[type="password"]').pressSequentially(password, { delay: 50 });
-  // Clear F5 Shape anti-bot cookies that Bell sets on page load; without this the
-  // auth.login POST can be rejected by Shape's server-side bot gate (Firefox project).
-  await page.context().clearCookies();
-  await page.getByRole('button', { name: 'Login' }).click();
-  await page.waitForURL(/.*#\/mail.*/);
-  await dismissMfaModals(page);
-}
+import { test, expect } from '@playwright/test';
+import { BASE_URL, VALID_EMAIL, dismissMfaModals, setupAuthenticatedPage } from './helpers';
 
 // ═════════════════════════════════════════════
-// 1. LOGIN PAGE
-// ═════════════════════════════════════════════
-test.describe('Login Page', () => {
-  // The chromium/firefox projects set storageState at the project level.
-  // Override it here with an empty state so these tests always see the real login page.
-  test.use({ storageState: { cookies: [], origins: [] } });
-
-  test.beforeEach(async ({ page }) => {
-    await page.goto(BASE_URL);
-    await page.waitForSelector('input[type="text"], input[type="email"]');
-  });
-
-  test('should display login page with correct elements', async ({ page }) => {
-    // Bell logo / page header
-    await expect(page.locator('img[alt*="Bell"], .bell-logo, header').first()).toBeVisible();
-    // Form fields
-    await expect(page.locator('input[type="text"], input[type="email"]').first()).toBeVisible();
-    await expect(page.locator('input[type="password"]')).toBeVisible();
-    // Keep me logged in checkbox
-    await expect(page.getByLabel(/keep me logged in/i)).toBeVisible();
-    // Log in button
-    await expect(page.getByRole('button', { name: 'Login' })).toBeVisible();
-    // Forgot password link
-    await expect(page.getByRole('link', { name: /forgot password/i })).toBeVisible();
-  });
-
-  test('should have email field focused or ready for input', async ({ page }) => {
-    const emailField = page.locator('input[type="text"], input[type="email"]').first();
-    await expect(emailField).toBeEnabled();
-    await emailField.fill('test@sympatico.ca');
-    await expect(emailField).toHaveValue('test@sympatico.ca');
-  });
-
-  test('should toggle "Keep me logged in" checkbox', async ({ page }) => {
-    const checkbox = page.getByLabel(/keep me logged in/i);
-    await expect(checkbox).not.toBeChecked();
-    await checkbox.check();
-    await expect(checkbox).toBeChecked();
-    await checkbox.uncheck();
-    await expect(checkbox).not.toBeChecked();
-  });
-
-  test('should show error on empty form submission', async ({ page }) => {
-    await page.getByRole('button', { name: 'Login' }).click();
-    await page.waitForTimeout(500);
-    // Bell uses HTML5 required field validation — page stays on login
-    await expect(page.getByRole('button', { name: 'Login' })).toBeVisible();
-    await expect(page).not.toHaveURL(/.*#\/mail.*/);
-  });
-
-  test('should navigate to Forgot Password page', async ({ page }) => {
-    await page.getByRole('link', { name: /forgot password/i }).click();
-    await page.waitForLoadState('networkidle');
-    // Should navigate away or open a new flow
-    const urlChanged = !page.url().endsWith('#/');
-    const contentChanged = await page.getByText(/reset|password|email/i).isVisible().catch(() => false);
-    expect(urlChanged || contentChanged).toBeTruthy();
-  });
-
-  test('should display page in English by default with French toggle available', async ({ page }) => {
-    await expect(page.getByText(/log in to bell email/i)).toBeVisible();
-    await expect(page.getByRole('link', { name: /français/i })).toBeVisible();
-  });
-
-  test('should switch UI language to French', async ({ page }) => {
-    await page.getByRole('link', { name: /français/i }).click();
-    await page.waitForTimeout(1000);
-    // French login button reads "Se connecter" — match by visible text, not aria-label
-    await expect(page.locator('button', { hasText: /se connecter/i })).toBeVisible();
-  });
-
-  test('password field should mask input', async ({ page }) => {
-    const passwordField = page.locator('input[type="password"]');
-    await expect(passwordField).toHaveAttribute('type', 'password');
-  });
-
-  test('should successfully log in with valid credentials', async ({ page }) => {
-    test.slow(); // triple timeout — Bell can be slow to redirect after login
-    // beforeEach already loaded the login page; fill and submit directly to avoid
-    // an extra page.goto() which can confuse Bell's server and add latency.
-    await page.locator('input[type="text"], input[type="email"]').first().fill(VALID_EMAIL);
-    await page.locator('input[type="password"]').focus();
-    await page.keyboard.press('Control+a');
-    await page.keyboard.press('Delete');
-    await page.locator('input[type="password"]').pressSequentially(VALID_PASSWORD, { delay: 50 });
-    // Clear Shape anti-bot cookies before submitting (see login() helper comment).
-    await page.context().clearCookies();
-    await page.getByRole('button', { name: 'Login' }).click();
-    await page.waitForURL(/.*#\/mail.*/, { timeout: parseInt(process.env.PLAYWRIGHT_TIMEOUT || '30000') });
-    await dismissMfaModals(page);
-    await expect(page).toHaveURL(/.*#\/mail.*/);
-    await expect(page.getByText(/inbox/i).first()).toBeVisible();
-  });
-
-  // Kept last so that any IP-level rate-limiting from failed logins doesn't block the valid-login test above
-  test('should show error on invalid credentials', async ({ page }) => {
-    await page.locator('input[type="text"], input[type="email"]').first().fill('invalid@sympatico.ca');
-    await page.locator('input[type="password"]').fill('wrongpassword123');
-    await page.getByRole('button', { name: 'Login' }).click();
-    await page.waitForTimeout(2000);
-    const errorVisible = await page.locator(
-      '[class*="error"], [class*="alert"], [role="alert"]'
-    ).isVisible().catch(() => false);
-    const stillOnLoginPage = page.url().includes('#/') && !page.url().includes('#/mail');
-    expect(errorVisible || stillOnLoginPage).toBeTruthy();
-  });
-});
-
-// ═════════════════════════════════════════════
-// 2. INBOX
+// INBOX
+// Tests covering the inbox view, email list interactions,
+// navigation, search, and selection.
 // ═════════════════════════════════════════════
 test.describe('Inbox', () => {
   // storageState is inherited from the project config (user-chromium.json or user-firefox.json).
 
   test.beforeEach(async ({ page, browserName }) => {
-    // Build the browser-specific auth file path to persist refreshed cookies after each test.
-    const authFile = `playwright/.auth/user-${browserName}.json`;
-    await page.goto(BASE_URL);
-    // If the saved session was invalidated (e.g. by a real login in the Login Page suite
-    // creating a new server-side session), Bell lands on the login page — re-authenticate.
-    if (await page.getByRole('button', { name: 'Login' }).isVisible({ timeout: 5000 }).catch(() => false)) {
-      await login(page);
-    } else {
-      await page.waitForURL(/.*#\/mail.*/);
-    }
-    await dismissMfaModals(page);
-    // Persist any rotated/refreshed cookies so the next test starts with a valid session.
-    await page.context().storageState({ path: authFile });
+    await setupAuthenticatedPage(page, browserName);
   });
 
   test('should display inbox after login', async ({ page }) => {
@@ -308,7 +147,6 @@ test.describe('Inbox', () => {
   });
 
   test('should be able to select an email with checkbox', async ({ page }) => {
-    // dismissMfaModals is handled by beforeEach; no need to call it again here.
     // Bell uses CSS-styled checkboxes: the <input> is hidden and its .checked property
     // is not set by clicking the input directly. Check that the checkbox UI elements
     // exist and attempt a click; verify via visual selection state or inbox heading.
@@ -372,63 +210,15 @@ test.describe('Inbox', () => {
 });
 
 // ═════════════════════════════════════════════
-// 3. LOGOUT
-// ═════════════════════════════════════════════
-test.describe('Logout', () => {
-  // storageState is inherited from the project config (user-chromium.json or user-firefox.json).
-
-  test.beforeEach(async ({ page, browserName }) => {
-    const authFile = `playwright/.auth/user-${browserName}.json`;
-    await page.goto(BASE_URL);
-    // Same session-refresh guard as the Inbox suite.
-    if (await page.getByRole('button', { name: 'Login' }).isVisible({ timeout: 5000 }).catch(() => false)) {
-      await login(page);
-    } else {
-      await page.waitForURL(/.*#\/mail.*/);
-    }
-    await dismissMfaModals(page);
-    await page.context().storageState({ path: authFile });
-  });
-
-  test('should display Log out button when logged in', async ({ page }) => {
-    await expect(page.locator('span.ow-navbar-label', { hasText: /log out/i })).toBeVisible();
-  });
-
-  test('should log out and redirect away from webmail', async ({ page }) => {
-    await page.locator('span.ow-navbar-label', { hasText: /log out/i }).click();
-    await expect(page).toHaveURL(/ctvnews\.ca/, { timeout: 15000 });
-  });
-
-  test('should not be able to access inbox after logout', async ({ page }) => {
-    // beforeEach may need to re-authenticate if the previous test's logout invalidated
-    // the session; triple the timeout to give budget for re-auth + the test body.
-    test.slow();
-    await page.locator('span.ow-navbar-label', { hasText: /log out/i }).click();
-    await expect(page).toHaveURL(/ctvnews\.ca/, { timeout: 15000 });
-    await page.goto(`${BASE_URL}#/mail`);
-    await page.waitForTimeout(2000);
-    // Should be redirected back to login
-    const onLoginPage = await page.getByRole('button', { name: 'Login' }).isVisible({ timeout: 5000 }).catch(() => false);
-    expect(onLoginPage).toBeTruthy();
-  });
-});
-
-// ═════════════════════════════════════════════
-// 4. SEND & RECEIVE
+// SEND & RECEIVE
+// Tests covering email composition, sending, delivery polling,
+// and deletion of test emails.
 // ═════════════════════════════════════════════
 test.describe('Send & Receive', () => {
   // storageState is inherited from the project config (user-chromium.json or user-firefox.json).
 
   test.beforeEach(async ({ page, browserName }) => {
-    const authFile = `playwright/.auth/user-${browserName}.json`;
-    await page.goto(BASE_URL);
-    if (await page.getByRole('button', { name: 'Login' }).isVisible({ timeout: 5000 }).catch(() => false)) {
-      await login(page);
-    } else {
-      await page.waitForURL(/.*#\/mail.*/);
-    }
-    await dismissMfaModals(page);
-    await page.context().storageState({ path: authFile });
+    await setupAuthenticatedPage(page, browserName);
   });
 
   test('should compose, send, and receive an email', async ({ page }) => {
