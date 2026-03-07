@@ -1,5 +1,5 @@
 import { test, expect, Page } from '@playwright/test';
-import { setupAuthenticatedPage } from './helpers';
+import { setupAuthenticatedPage, dismissMfaModals } from './helpers';
 
 // ═════════════════════════════════════════════
 // CONTACTS
@@ -11,6 +11,9 @@ test.describe('Contacts', () => {
 
   test.beforeEach(async ({ page, browserName }) => {
     await setupAuthenticatedPage(page, browserName);
+    // Dismiss any MFA / 2FA modals before interacting with the navbar —
+    // they can reappear after session restore and block the click.
+    await dismissMfaModals(page);
     // Contacts navbar item is a <span class="ow-navbar-label">, not an <a> tag —
     // same pattern as Settings and Log out.
     await page.locator('span.ow-navbar-label', { hasText: /contacts/i }).click();
@@ -90,6 +93,7 @@ test.describe('Contacts', () => {
   // CREATE CONTACT
   // ═════════════════════════════════════════════
   test('should create a new contact and increase the Main count by one', async ({ page }) => {
+    await dismissMfaModals(page);
     // ── Step 1: Record baseline Main folder count ─────────────────────────────
     const countBefore = await getMainCount(page);
     expect(countBefore).toBeGreaterThan(-1); // ensure count was readable
@@ -110,6 +114,7 @@ test.describe('Contacts', () => {
   // the create test having run previously.
   // ═════════════════════════════════════════════
   test('should delete a contact and decrease the Main count by one', async ({ page }) => {
+    await dismissMfaModals(page);
     // ── Step 1: Create a fresh contact; capture its unique timestamp ──────────
     // The timestamp is used as the middle name, which Bell includes in the
     // checkbox aria-label: "Playwright <timestamp> Test" — allowing us to
@@ -169,6 +174,69 @@ test.describe('Contacts', () => {
 
     // ── Step 9: Verify count decreased by exactly 1 ──────────────────────────
     expect(countAfter).toBe(countBefore - 1);
+  });
+
+  // ═════════════════════════════════════════════
+  // CREATE GROUP
+  // Creates two test contacts then groups them together.
+  // Self-contained: all contacts and the group are created within the test.
+  // ═════════════════════════════════════════════
+  test('should create a group containing two test contacts', async ({ page }) => {
+    await dismissMfaModals(page);
+    // Contact creation + group form submission takes time — triple the timeout.
+    test.slow();
+
+    // ── Steps 1–2: Create two uniquely identifiable test contacts ─────────────
+    // Each returns its timestamp (middle name) for targeted lookup later.
+    const timestamp1 = await createTestContact(page);
+    const timestamp2 = await createTestContact(page);
+
+    // ── Step 3: Open New → Add group ─────────────────────────────────────────
+    await page.locator('.ow-contacts-contactsToolbar-label[aria-label="New"]').click();
+    await page.waitForTimeout(500);
+    await page.locator('a[aria-label="Add group"]').click();
+    await page.waitForTimeout(1000); // wait for group form to render
+
+    // ── Step 4: Fill group name ───────────────────────────────────────────────
+    const groupName = `Playwright Group ${Date.now()}`;
+    await page.locator('input[aria-label="Group name"]').fill(groupName);
+
+    // ── Step 5: Add both contacts to the group ────────────────────────────────
+    // The group form has its own combobox search (input.ow-combox-input), distinct
+    // from the contact list search bar (input.ow-contacts-ContactListSearch-input).
+    // Typing each contact's timestamp (middle name) gives a unique autocomplete
+    // match so we always select the right contact.
+    const groupSearch = page.locator('input.ow-combox-input');
+
+    for (const timestamp of [timestamp1, timestamp2]) {
+      // Search by first name to reliably trigger the autocomplete dropdown.
+      // Then target the specific contact by its timestamp, which Bell renders
+      // as the div title: <div title="Playwright <timestamp> Test">
+      await groupSearch.fill('Playwright');
+      await page.waitForTimeout(1000); // allow autocomplete list to populate
+
+      const suggestion = page.locator(`div[title*="${timestamp}"]`).first();
+      await suggestion.waitFor({ state: 'visible', timeout: 5000 });
+      await suggestion.click();
+      await page.waitForTimeout(500);
+      // Bell clears the search box after each selection — no manual clear needed
+    }
+
+    // ── Step 6: Verify both contacts were added before saving ─────────────────
+    await expect(page.getByText(/Contact List \(2\)/i)).toBeVisible({ timeout: 5000 });
+
+    // ── Step 7: Save the group ────────────────────────────────────────────────
+    await page.locator('button[aria-label="Save"]').click();
+    await page.locator('button[aria-label="Save"]')
+      .waitFor({ state: 'hidden', timeout: 10000 }).catch(() => {});
+    await page.waitForTimeout(1000);
+
+    // ── Step 8: Verify the group name appears in the contacts area ────────────
+    await expect(page.getByText(groupName, { exact: false })).toBeVisible({ timeout: 5000 });
+
+    // ── Step 9: Logout ────────────────────────────────────────────────────────
+    await page.locator('span.ow-navbar-label', { hasText: /log out/i }).click();
+    await expect(page).toHaveURL(/ctvnews\.ca/, { timeout: 15000 });
   });
 
   // ─────────────────────────────────────────────
