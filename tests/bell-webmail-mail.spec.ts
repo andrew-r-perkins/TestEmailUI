@@ -1,80 +1,104 @@
-import { test, expect } from '@playwright/test';
-import { BASE_URL, VALID_EMAIL, dismissMfaModals, setupAuthenticatedPage } from './helpers';
+import { test, expect } from './fixtures';
+import type { Page, BrowserContext } from '@playwright/test';
+import { devices } from '@playwright/test';
+import {
+  BASE_URL,
+  VALID_EMAIL,
+  dismissMfaModals,
+  setupAuthenticatedPage,
+  waitForMailUrl,
+  openAppSection,
+  getRefreshButton,
+  refreshInbox,
+} from './helpers';
 
-// ═════════════════════════════════════════════
-// INBOX
-// Tests covering the inbox view, email list interactions,
-// navigation, search, and selection.
-// ═════════════════════════════════════════════
-test.describe('Inbox', () => {
-  // storageState is inherited from the project config (user-chromium.json or user-firefox.json).
+// Single shared context+page for the entire file — one login covers all 17 tests.
+// Prevents Bell's Shape Security from rate-limiting due to repeated goto(BASE_URL) calls.
+// Previously: 1 (Inbox beforeAll) + 2 (Send & Receive beforeEach) = 3 login attempts.
+// Now: 1 login total for the whole spec.
+let sharedPage: Page;
+let sharedContext: BrowserContext;
 
-  test.beforeEach(async ({ page, browserName }) => {
-    await setupAuthenticatedPage(page, browserName);
+test.beforeAll(async ({ browser, browserName }) => {
+  sharedContext = await browser.newContext({
+    storageState: `playwright/.auth/user-${browserName}.json`,
+    // Firefox projects spoof Chrome's UA to bypass Bell's Shape gate (matches config).
+    ...(browserName === 'firefox' ? { userAgent: devices['Desktop Chrome'].userAgent } : {}),
+  });
+  sharedPage = await sharedContext.newPage();
+  await setupAuthenticatedPage(sharedPage, browserName);
+});
+
+test.afterAll(async () => {
+  await sharedContext.close();
+});
+
+test.describe.serial('Inbox', () => {
+  test.beforeEach(async () => {
+    // Reset to inbox list between tests via SPA nav (no goto(BASE_URL)).
+    // Handles: open-email tests that navigate away, search tests that show filtered results.
+    await dismissMfaModals(sharedPage);
+    await sharedPage.getByRole('link', { name: /mail/i }).first()
+      .click({ timeout: 5000 }).catch(() => {});
+    await sharedPage.waitForURL(/.*#\/mail.*/, { timeout: 5000 }).catch(() => {});
+    await dismissMfaModals(sharedPage);
   });
 
-  test('should display inbox after login', async ({ page }) => {
-    await expect(page.getByRole('heading', { name: /inbox/i })).toBeVisible();
-    await expect(page).toHaveURL(/.*#\/mail.*/);
+  test('should display inbox after login', async () => {
+    await expect(sharedPage.getByRole('heading', { name: /inbox/i })).toBeVisible();
+    await expect(sharedPage).toHaveURL(/.*#\/mail.*/);
   });
 
-  test('should show correct navigation tabs', async ({ page }) => {
-    await expect(page.getByRole('link', { name: /mail/i }).first()).toBeVisible();
-    await expect(page.getByRole('link', { name: /contacts/i })).toBeVisible();
-    await expect(page.getByRole('link', { name: /calendar/i })).toBeVisible();
-    await expect(page.getByRole('link', { name: /tasks/i })).toBeVisible();
+  test('should show correct navigation tabs', async () => {
+    await expect(sharedPage.getByRole('link', { name: /mail/i }).first()).toBeVisible();
+    await expect(sharedPage.getByRole('link', { name: /contacts/i })).toBeVisible();
+    await expect(sharedPage.getByRole('link', { name: /calendar/i })).toBeVisible();
+    await expect(sharedPage.getByRole('link', { name: /tasks/i })).toBeVisible();
   });
 
-  test('should display sidebar folders', async ({ page }) => {
-    await expect(page.getByText(/inbox/i).first()).toBeVisible();
-    await expect(page.getByText(/drafts/i)).toBeVisible();
-    await expect(page.getByText(/sent/i)).toBeVisible();
-    await expect(page.getByText(/junk/i)).toBeVisible();
-    await expect(page.getByText(/deleted/i)).toBeVisible();
+  test('should display sidebar folders', async () => {
+    await expect(sharedPage.getByText(/inbox/i).first()).toBeVisible();
+    await expect(sharedPage.getByText(/drafts/i)).toBeVisible();
+    await expect(sharedPage.getByText(/sent/i)).toBeVisible();
+    await expect(sharedPage.getByText(/junk/i)).toBeVisible();
+    await expect(sharedPage.getByText(/deleted/i)).toBeVisible();
   });
 
-  test('should display inbox toolbar with action buttons', async ({ page }) => {
-    await expect(page.getByRole('button', { name: /compose/i })).toBeVisible();
-    await expect(page.getByRole('button', { name: /move to/i })).toBeVisible();
-    await expect(page.getByRole('button', { name: /more/i })).toBeVisible();
+  test('should display inbox toolbar with action buttons', async () => {
+    await expect(sharedPage.getByRole('button', { name: /compose/i })).toBeVisible();
+    await expect(sharedPage.getByRole('button', { name: /move to/i })).toBeVisible();
+    await expect(sharedPage.getByRole('button', { name: /more/i })).toBeVisible();
   });
 
-  test('should display email list with From, Subject, and Date columns', async ({ page }) => {
-    await expect(page.getByText(/from/i).first()).toBeVisible();
-    await expect(page.getByText(/subject/i).first()).toBeVisible();
-    await expect(page.getByText(/date/i).first()).toBeVisible();
+  test('should display email list with From, Subject, and Date columns', async () => {
+    await expect(sharedPage.getByText(/from/i).first()).toBeVisible();
+    await expect(sharedPage.getByText(/subject/i).first()).toBeVisible();
+    await expect(sharedPage.getByText(/date/i).first()).toBeVisible();
   });
 
-  test('should group emails by date sections (Today, Yesterday, etc.)', async ({ page }) => {
-    const dateGroups = page.locator('text=/Today|Yesterday|Last Week|Sunday|Monday/i');
-    await expect(dateGroups.first()).toBeVisible();
+  test('should group emails by date sections (Today, Yesterday, etc.)', async () => {
+    await expect(sharedPage.locator('text=/Today|Yesterday|Last Week|Sunday|Monday/i').first()).toBeVisible();
   });
 
-  test('should display unread email count badge on Inbox', async ({ page }) => {
-    // The inbox count (e.g. "3206") should be visible in the sidebar
-    const inboxItem = page.locator('text=/inbox/i').first();
-    await expect(inboxItem).toBeVisible();
-    // Just verify the page contains a number (unread count rendered somewhere)
-    const bodyText = await page.locator('body').textContent().catch(() => '');
+  test('should display unread email count badge on Inbox', async () => {
+    await expect(sharedPage.locator('text=/inbox/i').first()).toBeVisible();
+    const bodyText = await sharedPage.locator('body').textContent().catch(() => '');
     expect(bodyText).toMatch(/\d+/);
   });
 
-  test('should open an email when clicked', async ({ page }) => {
-    await dismissMfaModals(page);
-    const beforeUrl = page.url();
+  test('should open an email when clicked', async () => {
+    await dismissMfaModals(sharedPage);
+    const beforeUrl = sharedPage.url();
 
-    // Bell email items follow ow-mail-MailSummaryListItem-* naming
-    // (parallel to ow-mail-MailSummaryListHeader-* confirmed from test-26 error output).
-    // Use count() (non-blocking) to pick the first selector that matches, then click.
     const candidates = [
-      page.locator('[class*="MailSummaryListItem"]').first(),         // Bell email item (most specific)
-      page.locator('[role="checkbox"]').nth(1).locator('..').locator('..'), // grandparent of email checkbox
-      page.getByRole('row').nth(2),                                   // skip header + date-group row
-      page.getByRole('row').nth(1),                                   // ARIA rows (skip header)
-      page.locator('tbody tr').first(),                               // explicit tbody rows
-      page.locator('[class*="ow-"][class*="row"]').first(),           // Bell ow- row class
-      page.locator('[class*="ow-"][class*="item"]').first(),          // Bell ow- item class
-      page.locator('li[class]').first(),                              // list items
+      sharedPage.locator('[class*="MailSummaryListItem"]').first(),
+      sharedPage.locator('[role="checkbox"]').nth(1).locator('..').locator('..'),
+      sharedPage.getByRole('row').nth(2),
+      sharedPage.getByRole('row').nth(1),
+      sharedPage.locator('tbody tr').first(),
+      sharedPage.locator('[class*="ow-"][class*="row"]').first(),
+      sharedPage.locator('[class*="ow-"][class*="item"]').first(),
+      sharedPage.locator('li[class]').first(),
     ];
 
     let clicked = false;
@@ -88,172 +112,125 @@ test.describe('Inbox', () => {
     }
 
     if (!clicked) {
-      // DOM structure unknown — verify inbox content is present (not a timeout failure)
-      await expect(page.getByText(/inbox/i).first()).toBeVisible();
+      await expect(sharedPage.getByText(/inbox/i).first()).toBeVisible();
       return;
     }
 
-    await page.waitForTimeout(2000);
-
-    // Multiple signals that an email opened in the reading pane or via navigation
-    const emailOpened = await page.locator(
-      '[class*="message-body"], [class*="email-content"], [class*="mail-detail"], ' +
-      '[class*="reading-pane"], [class*="ow-"][class*="reader"], ' +
-      '[class*="ow-"][class*="preview"], [class*="ow-"][class*="detail"]'
-    ).isVisible().catch(() => false);
-
-    // URL change (e.g. #/mail → #/mail/12345) also counts as "opened"
-    const urlChanged = page.url() !== beforeUrl;
-
-    // A Reply button appearing is a reliable signal the reading pane is active
-    const replyVisible = await page.getByRole('button', { name: /^Reply$/i }).isVisible().catch(() => false);
-
-    expect(emailOpened || urlChanged || replyVisible).toBeTruthy();
+    await expect.poll(async () => {
+      const emailOpened = await sharedPage.locator(
+        '[class*="message-body"], [class*="email-content"], [class*="mail-detail"], ' +
+        '[class*="reading-pane"], [class*="ow-"][class*="reader"], ' +
+        '[class*="ow-"][class*="preview"], [class*="ow-"][class*="detail"]'
+      ).isVisible().catch(() => false);
+      const urlChanged = sharedPage.url() !== beforeUrl;
+      const replyVisible = await sharedPage.getByRole('button', { name: /^Reply$/i }).isVisible().catch(() => false);
+      return emailOpened || urlChanged || replyVisible;
+    }, { timeout: 7000 }).toBeTruthy();
   });
 
-  test('should be able to search inbox', async ({ page }) => {
-    const searchBox = page.getByPlaceholder(/search inbox/i);
+  test('should be able to search inbox', async () => {
+    const searchBox = sharedPage.getByPlaceholder(/search inbox/i);
     await expect(searchBox).toBeVisible();
     await searchBox.fill('AWS Budgets');
-    await page.keyboard.press('Enter');
-    await page.waitForTimeout(1500);
-    // Results should be filtered or a search results view shown
-    const resultsVisible = await page.locator(
-      '[class*="search-result"], [class*="results"]'
-    ).isVisible().catch(() => false);
-    const stillHasContent = await page.locator(
-      'table tr, [class*="email-row"]'
-    ).count();
-    expect(resultsVisible || stillHasContent >= 0).toBeTruthy();
+    await sharedPage.keyboard.press('Enter');
+
+    await expect.poll(async () => {
+      const resultsVisible = await sharedPage.locator('[class*="search-result"], [class*="results"]').isVisible().catch(() => false);
+      const resultRows = await sharedPage.locator('[class*="MailSummaryListItem"], table tr, [class*="email-row"]').count();
+      return resultsVisible || resultRows > 0;
+    }, { timeout: 10000 }).toBeTruthy();
   });
 
-  test('should display Welcome message with user name', async ({ page }) => {
-    await expect(page.getByText(/welcome/i)).toBeVisible();
+  test('should display Welcome message with user name', async () => {
+    await expect(sharedPage.getByText(/welcome/i)).toBeVisible();
   });
 
-  test('should have Settings link accessible', async ({ page }) => {
-    // Settings is rendered as a <span class="ow-navbar-label">, not an <a> tag
-    await expect(page.locator('span.ow-navbar-label', { hasText: /settings/i })).toBeVisible();
+  test('should have Settings link accessible', async () => {
+    await expect(sharedPage.locator('span.ow-navbar-label', { hasText: /settings/i })).toBeVisible();
   });
 
-  test('should have Help link accessible', async ({ page }) => {
-    // Help is rendered as a <span class="ow-navbar-label">, not an <a> tag
-    await expect(page.locator('span.ow-navbar-label', { hasText: /help/i })).toBeVisible();
+  test('should have Help link accessible', async () => {
+    await expect(sharedPage.locator('span.ow-navbar-label', { hasText: /help/i })).toBeVisible();
   });
 
-  test('should have refresh button in toolbar', async ({ page }) => {
-    const refreshBtn = page.locator('button[title*="refresh" i], button[aria-label*="refresh" i], [class*="refresh"]').first();
-    await expect(refreshBtn).toBeVisible();
+  test('should have refresh button in toolbar', async () => {
+    await expect(getRefreshButton(sharedPage)).toBeVisible();
   });
 
-  test('should be able to select an email with checkbox', async ({ page }) => {
-    // Bell uses CSS-styled checkboxes: the <input> is hidden and its .checked property
-    // is not set by clicking the input directly. Check that the checkbox UI elements
-    // exist and attempt a click; verify via visual selection state or inbox heading.
-    // Bell email row checkboxes use class "ow-icon-checkbox-unselected" —
-    // generic nth() selectors hit the header or date-group select-all instead.
-    const checkboxes = page.locator('[type="checkbox"], [role="checkbox"]');
-    const count = await checkboxes.count();
-    expect(count).toBeGreaterThan(0); // at minimum, the UI has checkbox elements
+  test('should be able to select an email with checkbox', async () => {
+    const checkboxes = sharedPage.locator('[type="checkbox"], [role="checkbox"]');
+    expect(await checkboxes.count()).toBeGreaterThan(0);
 
-    const cb = page.locator('[class*="ow-icon-checkbox-unselected"]').first();
+    const cb = sharedPage.locator('[class*="ow-icon-checkbox-unselected"]').first();
     if (await cb.isVisible().catch(() => false)) {
       await cb.click({ force: true });
-      // Accept either: aria-checked="true", or a "selected"/"checked" class on a parent row
-      const isChecked   = await cb.getAttribute('aria-checked').catch(() => null) === 'true';
-      const hasSelected = await page.locator('[aria-selected="true"], [class*="selected"], [class*="checked"]').count();
+      const isChecked = await cb.getAttribute('aria-checked').catch(() => null) === 'true';
+      const hasSelected = await sharedPage.locator('[aria-selected="true"], [class*="selected"], [class*="checked"]').count();
       if (!isChecked && hasSelected === 0) {
-        // Click was attempted — inbox should still be functional
-        await expect(page.getByText(/inbox/i).first()).toBeVisible();
+        await expect(sharedPage.getByText(/inbox/i).first()).toBeVisible();
       } else {
         expect(isChecked || hasSelected > 0).toBeTruthy();
       }
     } else {
-      // Fallback: just verify checkbox elements exist in the UI
-      await expect(page.getByText(/inbox/i).first()).toBeVisible();
+      await expect(sharedPage.getByText(/inbox/i).first()).toBeVisible();
     }
   });
 
-  test('should be able to select all emails with header checkbox', async ({ page }) => {
-    // Bell's "select all" checkbox is <span id="mailLisRightBadge" role="checkbox"
-    // class="ow-mail-MailSummaryListHeader-selectCount-0 badge"> — it is display:none
-    // when 0 items are selected, so even force:true fails in Playwright.
-    // Dispatch the click event directly via evaluate to bypass visibility checks.
-    const checkboxes = page.locator('[type="checkbox"], [role="checkbox"]');
-    const count = await checkboxes.count();
-    expect(count).toBeGreaterThan(0);
+  test('should be able to select all emails with header checkbox', async () => {
+    const checkboxes = sharedPage.locator('[type="checkbox"], [role="checkbox"]');
+    expect(await checkboxes.count()).toBeGreaterThan(0);
 
-    if (count >= 1) {
-      await page.evaluate(() => {
-        // Primary target: Bell's known select-all element
-        const el = document.getElementById('mailLisRightBadge') as HTMLElement | null;
-        if (el) {
-          el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-        } else {
-          // Fallback: fire click on the first checkbox-like element in the DOM
-          const cb = document.querySelector('[type="checkbox"], [role="checkbox"]') as HTMLElement | null;
-          if (cb) cb.click();
-        }
-      });
-
-      await page.waitForTimeout(500);
-      const isChecked   = await checkboxes.first().isChecked().catch(() => false);
-      const hasSelected = await page.locator('[aria-selected="true"], [class*="selected"], [class*="checked"]').count();
-      if (!isChecked && hasSelected === 0) {
-        // Click was dispatched but Bell's JS may not toggle selection for a hidden element
-        await expect(page.getByText(/inbox/i).first()).toBeVisible();
+    await sharedPage.evaluate(() => {
+      const el = document.getElementById('mailLisRightBadge') as HTMLElement | null;
+      if (el) {
+        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
       } else {
-        expect(isChecked || hasSelected > 0).toBeTruthy();
+        const cb = document.querySelector('[type="checkbox"], [role="checkbox"]') as HTMLElement | null;
+        if (cb) cb.click();
       }
-    }
+    });
+
+    await expect.poll(async () => {
+      const isChecked = await checkboxes.first().isChecked().catch(() => false);
+      const hasSelected = await sharedPage.locator('[aria-selected="true"], [class*="selected"], [class*="checked"]').count();
+      return isChecked || hasSelected > 0;
+    }, { timeout: 5000 }).toBeTruthy().catch(async () => {
+      await expect(sharedPage.getByText(/inbox/i).first()).toBeVisible();
+    });
   });
 });
 
-// ═════════════════════════════════════════════
-// SEND & RECEIVE
-// Tests covering email composition, sending, delivery polling,
-// and deletion of test emails.
-// ═════════════════════════════════════════════
-test.describe('Send & Receive', () => {
-  // storageState is inherited from the project config (user-chromium.json or user-firefox.json).
-
-  test.beforeEach(async ({ page, browserName }) => {
-    await setupAuthenticatedPage(page, browserName);
+test.describe.serial('Send & Receive', () => {
+  test.beforeEach(async () => {
+    // Reset to inbox list between tests via SPA nav (no goto(BASE_URL)).
+    await dismissMfaModals(sharedPage);
+    await sharedPage.getByRole('link', { name: /mail/i }).first()
+      .click({ timeout: 5000 }).catch(() => {});
+    await sharedPage.waitForURL(/.*#\/mail.*/, { timeout: 5000 }).catch(() => {});
+    await dismissMfaModals(sharedPage);
   });
 
-  test('should compose, send, and receive an email', async ({ page }) => {
-    // Composing + waiting for self-delivery can take 60–90 s; triple the timeout.
-    test.slow();
-
-    const subject = `Playwright test ${Date.now()}`;
-    const body = 'Automated test email — safe to delete.';
-
-    await dismissMfaModals(page);
-
-    // ── Step 1: Open compose window ──────────────────────────────────────────
+  const sendEmailToSelf = async (page: Page, subject: string, body: string): Promise<void> => {
     await page.getByRole('button', { name: /compose/i }).click();
-    await page.waitForTimeout(1500);
 
-    // ── Step 2: Fill To field — send to self ─────────────────────────────────
     const toField = page.locator([
       'input[aria-label*="To" i]',
       'input[placeholder*="To" i]',
       '[class*="ow-"][class*="to"] input',
       '[class*="compose"] input[type="text"]',
     ].join(', ')).first();
+    await expect(toField).toBeVisible({ timeout: 10000 });
     await toField.fill(VALID_EMAIL);
-    await page.keyboard.press('Enter'); // confirm autocomplete recipient
+    await page.keyboard.press('Enter');
 
-    // ── Step 3: Fill Subject ─────────────────────────────────────────────────
     const subjectField = page.locator([
       'input[aria-label*="subject" i]',
       'input[placeholder*="subject" i]',
       'input[name*="subject" i]',
     ].join(', ')).first();
+    await expect(subjectField).toBeVisible({ timeout: 10000 });
     await subjectField.fill(subject);
 
-    // ── Step 4: Fill body ────────────────────────────────────────────────────
-    // Bell's editor may be a contenteditable div or inside an iframe.
     const editorFrame = page.frameLocator([
       'iframe[class*="editor" i]',
       'iframe[title*="editor" i]',
@@ -261,9 +238,7 @@ test.describe('Send & Receive', () => {
       'iframe[class*="compose" i]',
     ].join(', ')).first();
 
-    const inlineBody = page.locator(
-      '[contenteditable="true"], [role="textbox"][aria-multiline="true"]'
-    ).first();
+    const inlineBody = page.locator('[contenteditable="true"], [role="textbox"][aria-multiline="true"]').first();
 
     if (await editorFrame.locator('body').isVisible({ timeout: 2000 }).catch(() => false)) {
       await editorFrame.locator('body').click();
@@ -273,105 +248,57 @@ test.describe('Send & Receive', () => {
       await inlineBody.type(body);
     }
 
-    // ── Step 5: Send ─────────────────────────────────────────────────────────
     await page.getByRole('button', { name: /^send$/i }).click();
-    await page.waitForTimeout(2000);
+    await expect(page.getByRole('button', { name: /^send$/i })).toBeHidden({ timeout: 10000 }).catch(() => {});
 
-    // Navigate back to inbox if compose closed us out of the mail view
     if (!page.url().includes('#/mail')) {
-      await page.getByRole('link', { name: /mail/i }).first().click();
-      await page.waitForURL(/.*#\/mail.*/);
+      await openAppSection(page, 'mail');
+      await waitForMailUrl(page);
     }
     await dismissMfaModals(page);
+  };
 
-    // ── Step 6: Poll for the email — refresh up to 8× with 8 s gaps (≈ 64 s) ─
-    const refreshBtn = page.locator(
-      'button[title*="refresh" i], button[aria-label*="refresh" i], [class*="refresh"]'
-    ).first();
-
-    let emailArrived = false;
-    for (let i = 0; i < 8; i++) {
-      if (await page.getByText(subject, { exact: false }).isVisible().catch(() => false)) {
-        emailArrived = true;
-        break;
-      }
-      // Refresh the email list
+  const waitForSubjectInInbox = async (page: Page, subject: string, timeout = 70000): Promise<void> => {
+    const refreshBtn = getRefreshButton(page);
+    await expect.poll(async () => {
+      const visible = await page.getByText(subject, { exact: false }).isVisible().catch(() => false);
+      if (visible) return true;
       if (await refreshBtn.isVisible().catch(() => false)) {
         await refreshBtn.click();
       } else {
-        await page.reload();
-        await dismissMfaModals(page);
+        await refreshInbox(page);
       }
-      await page.waitForTimeout(8000);
-    }
+      return await page.getByText(subject, { exact: false }).isVisible().catch(() => false);
+    }, { timeout, intervals: [2000, 4000, 7000] }).toBeTruthy();
+  };
 
-    // Final check after the last refresh cycle
-    if (!emailArrived) {
-      emailArrived = await page.getByText(subject, { exact: false }).isVisible().catch(() => false);
-    }
+  test('should compose, send, and receive an email', async () => {
+    test.slow();
+    const subject = `Playwright test ${Date.now()}`;
 
-    // ── Step 7: Verify subject visible in inbox ───────────────────────────────
-    expect(emailArrived).toBeTruthy();
-
-    // ── Step 8: Logout ────────────────────────────────────────────────────────
-    await page.locator('span.ow-navbar-label', { hasText: /log out/i }).click();
-    await expect(page).toHaveURL(/ctvnews\.ca/, { timeout: 15000 });
+    await dismissMfaModals(sharedPage);
+    await sendEmailToSelf(sharedPage, subject, 'Automated test email - safe to delete.');
+    await waitForSubjectInInbox(sharedPage, subject);
   });
 
-  test('should search for Playwright test emails and delete the latest one', async ({ page }) => {
+  test('should search for Playwright test emails and delete the latest one', async () => {
     test.slow();
+    await dismissMfaModals(sharedPage);
 
-    // Helper: hover over a sidebar folder and parse the Total count from the tooltip.
-    // Bell renders a styled tooltip on hover: "FolderName, Total: N emails, Unread: N emails"
-    const getFolderTotal = async (folderText: RegExp): Promise<number> => {
-      const folderEl = page.getByText(folderText).first();
-      await folderEl.hover();
-      await page.waitForTimeout(1000); // allow tooltip to appear
+    const subject = `Playwright cleanup ${Date.now()}`;
+    await sendEmailToSelf(sharedPage, subject, 'Cleanup email for delete test');
+    await waitForSubjectInInbox(sharedPage, subject);
 
-      // Styled tooltip DOM element (Bell's SPA)
-      const tooltip = page.locator(
-        '[role="tooltip"], [class*="tooltip"], [class*="ow-"][class*="tip"]'
-      ).first();
-      if (await tooltip.isVisible({ timeout: 2000 }).catch(() => false)) {
-        const text = await tooltip.textContent() ?? '';
-        const match = text.match(/Total:\s*(\d+)/i);
-        if (match) return parseInt(match[1]);
-      }
+    const searchBox = sharedPage.getByPlaceholder(/search inbox/i);
+    await searchBox.fill(subject);
+    await sharedPage.keyboard.press('Enter');
 
-      // Fallback: native title attribute on the element or its parent
-      const title = await folderEl.getAttribute('title').catch(() => null)
-        ?? await folderEl.locator('..').getAttribute('title').catch(() => null);
-      if (title) {
-        const match = title.match(/Total:\s*(\d+)/i);
-        if (match) return parseInt(match[1]);
-      }
+    await expect.poll(async () => await sharedPage.locator('[class*="MailSummaryListItem"]').count(), { timeout: 10000 })
+      .toBeGreaterThan(0);
 
-      return -1; // could not read count
-    };
+    await sharedPage.locator('[class*="ow-icon-checkbox-unselected"]').first().click({ force: true });
 
-    await dismissMfaModals(page);
-
-    // ── Steps 1–2: Record baseline counts for Inbox and Deleted ──────────────
-    const inboxTotalBefore   = await getFolderTotal(/^inbox$/i);
-    const deletedTotalBefore = await getFolderTotal(/^deleted$/i);
-    expect(inboxTotalBefore).toBeGreaterThan(0);
-
-    // ── Step 3: Search for "Playwright test" emails ───────────────────────────
-    const searchBox = page.getByPlaceholder(/search inbox/i);
-    await searchBox.fill('Playwright test');
-    await page.keyboard.press('Enter');
-    await page.waitForTimeout(2000);
-    expect(await page.locator('[class*="MailSummaryListItem"]').count()).toBeGreaterThan(0);
-
-    // ── Step 4: Select ONLY the first result and delete it ───────────────────
-    // Email row checkboxes use class "ow-icon-checkbox-unselected" — distinct from
-    // the header select-all which has a different class. This avoids selecting entire
-    // date groups when using generic nth() selectors.
-    await dismissMfaModals(page);
-    await page.locator('[class*="ow-icon-checkbox-unselected"]').first().click({ force: true });
-    await page.waitForTimeout(500);
-
-    const deleteBtn = page.locator([
+    const deleteBtn = sharedPage.locator([
       'button[aria-label*="delete" i]',
       'button[title*="delete" i]',
       'button[aria-label*="trash" i]',
@@ -381,36 +308,17 @@ test.describe('Send & Receive', () => {
     if (await deleteBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
       await deleteBtn.click();
     } else {
-      await page.getByRole('button', { name: /more/i }).click();
-      await page.waitForTimeout(500);
-      await page.getByRole('menuitem', { name: /delete/i })
+      await sharedPage.getByRole('button', { name: /more/i }).click();
+      await expect(sharedPage.getByRole('menuitem', { name: /delete/i })).toBeVisible({ timeout: 5000 }).catch(() => {});
+      await sharedPage.getByRole('menuitem', { name: /delete/i })
         .click()
-        .catch(() => page.getByText(/^delete$/i).first().click());
-    }
-    await page.waitForTimeout(1500);
-
-    // ── Step 5: Navigate back to inbox and refresh ────────────────────────────
-    await page.goto(BASE_URL);
-    await page.waitForURL(/.*#\/mail.*/);
-    await dismissMfaModals(page);
-    const refreshBtn = page.locator(
-      'button[title*="refresh" i], button[aria-label*="refresh" i], [class*="refresh"]'
-    ).first();
-    if (await refreshBtn.isVisible().catch(() => false)) {
-      await refreshBtn.click();
-      await page.waitForTimeout(1500);
+        .catch(() => sharedPage.getByText(/^delete$/i).first().click());
     }
 
-    // ── Steps 6–7: Re-read folder counts after deletion ───────────────────────
-    const inboxTotalAfter   = await getFolderTotal(/^inbox$/i);
-    const deletedTotalAfter = await getFolderTotal(/^deleted$/i);
-
-    // ── Steps 8–9: Verify inbox decreased by 1 and Deleted increased by 1 ─────
-    expect(inboxTotalAfter).toBe(inboxTotalBefore - 1);
-    expect(deletedTotalAfter).toBe(deletedTotalBefore + 1);
-
-    // ── Step 10: Logout ───────────────────────────────────────────────────────
-    await page.locator('span.ow-navbar-label', { hasText: /log out/i }).click();
-    await expect(page).toHaveURL(/ctvnews\.ca/, { timeout: 15000 });
+    // Verify deletion by searching same unique subject and expecting no rows.
+    await searchBox.fill(subject);
+    await sharedPage.keyboard.press('Enter');
+    await expect.poll(async () => await sharedPage.locator('[class*="MailSummaryListItem"]').count(), { timeout: 15000 })
+      .toBe(0);
   });
 });
